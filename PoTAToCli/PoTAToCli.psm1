@@ -554,9 +554,12 @@ function Get-PotatoSelectorInputs {
 function ConvertTo-PotatoRectangle {
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)]
         [object] $Rectangle
     )
+
+    if ($null -eq $Rectangle) {
+        return $null
+    }
 
     [ordered]@{
         x = [int][Math]::Round($Rectangle.X)
