@@ -163,6 +163,13 @@ function Get-PotatoLogPath {
     Join-Path -Path (Get-PotatoRunPath) -ChildPath 'potato.log'
 }
 
+function Get-PotatoMetricsPath {
+    [CmdletBinding()]
+    param()
+
+    Join-Path -Path (Get-PotatoRunPath) -ChildPath 'metrics.jsonl'
+}
+
 function Write-PotatoLog {
     [CmdletBinding()]
     param(
@@ -182,6 +189,21 @@ function Write-PotatoLog {
         message = $Message
     }
     $entry | ConvertTo-Json -Compress | Add-Content -LiteralPath (Get-PotatoLogPath) -Encoding UTF8
+}
+
+function Write-PotatoMetric {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object] $Metric
+    )
+
+    try {
+        $Metric | ConvertTo-Json -Depth 30 -Compress | Add-Content -LiteralPath (Get-PotatoMetricsPath) -Encoding UTF8
+    }
+    catch {
+        try { Write-PotatoLog -Level Warning -Message "Metric write failed: $($_.Exception.Message)" } catch {}
+    }
 }
 
 function ConvertTo-PotatoArgumentMap {
@@ -1668,7 +1690,27 @@ function Invoke-PotatoCliCommand {
         $watch.Stop()
     }
 
-    $response = New-PotatoResult -Command $normalized -Ok $ok -Data $result -ErrorObject $errorObject -DurationMs ([int]$watch.ElapsedMilliseconds)
+    $durationMs = [int]$watch.ElapsedMilliseconds
+    try {
+        $argumentNames = @($argsMap.Keys | Where-Object { $_ -ne '_' } | ForEach-Object { [string]$_ })
+        $positionalCount = 0
+        if ($argsMap.Contains('_') -and $argsMap._) { $positionalCount = @($argsMap._).Count }
+        Write-PotatoMetric -Metric ([ordered]@{
+            timestamp = (Get-Date).ToString('o')
+            event = 'potato_command'
+            runId = $script:CurrentState.runId
+            command = $normalized
+            ok = $ok
+            durationMs = $durationMs
+            argumentNames = $argumentNames
+            positionalArgumentCount = $positionalCount
+            errorType = $(if ($errorObject) { $errorObject.type } else { $null })
+            errorCategory = $(if ($errorObject) { $errorObject.category } else { $null })
+        })
+    }
+    catch {}
+
+    $response = New-PotatoResult -Command $normalized -Ok $ok -Data $result -ErrorObject $errorObject -DurationMs $durationMs
     $response | ConvertTo-Json -Depth 60 -Compress
 }
 
