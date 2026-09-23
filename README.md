@@ -75,7 +75,7 @@ Run `potato.ps1 help` for JSON command guidance, or `potato.ps1 help -Topic type
 | `click` | Click or invoke a selected element. |
 | `click-coordinate` | Click absolute screen coordinates. Use only as a documented fallback. |
 | `type` | Type text into the currently focused control. |
-| `hotkey` | Send a Windows Forms SendKeys expression. Prefer GUI actions when possible. |
+| `hotkey` | Send one explicitly authorized chord; blocked by default. |
 | `drag` | Drag between two absolute screen coordinates. |
 | `hover` | Move the mouse over an element or coordinate. |
 | `wait-element` | Wait for an element selector to appear. |
@@ -160,14 +160,14 @@ Wait for a saved file:
 - Preserve the interaction requirements of the user/testcase. A fallback explanation does not authorize a prohibited shortcut, clipboard operation, or bypass of a required GUI route.
 - Run commands against one desktop sequentially. A screenshot run concurrently with typing cannot prove the resulting state.
 - `ok` means command execution succeeded. Check `exists`/`conditionMet` and assert the actual application result separately. `verified` is `null` unless verification was requested.
-- `type` takes literal text, escaping SendKeys metacharacters. Use `hotkey` for explicitly permitted key expressions. `type -Verify` uses read-only UIA text and never clipboard copying or automatic retyping. `-PreDelete` now defaults to TextPattern selection plus Backspace; `-ClearMethod Shortcut` explicitly opts into Ctrl+A. Unsupported selection/verification fails clearly.
+- `type` sends literal Unicode keyboard events, including text that resembles shortcut syntax. Use `hotkey` for explicitly permitted key expressions. `type -Verify` uses read-only UIA text and never clipboard copying or automatic retyping. `-PreDelete` now defaults to TextPattern selection plus Backspace; `-ClearMethod Shortcut` explicitly opts into Ctrl+A. Unsupported selection/verification fails clearly.
 - `click -Method Mouse` uses the selected control's geometry without inventing absolute coordinates; `-Method Invoke` requires InvokePattern. Capture/observe the postcondition before retrying a potentially completed action.
 - Use `wait-file -Path <unique-execution-output> -MinBytes 1 -StableMs 500 -TimeoutMs 10000` for asynchronous files, then check required format/content. A stale file or a stable but invalid file is not a passing result.
 - `TimeoutMs` is a retry deadline, not a hard cancellation of a blocked UIA provider call. Exact selector predicates are pushed to the provider, but provider hangs still require external process supervision.
 
 - Prefer selector-based `click`, `select`, `wait-element`, and `read` over coordinates.
-- Use `observe` frequently during exploration, but keep `-Depth` and `-MaxElements` bounded to avoid excessive output.
-- Avoid `hotkey` unless the UI action is not practically accessible through visible controls. These tests are meant to exercise GUI behavior.
+- Use bounded `observe` for unknown states; reuse discoveries and use targeted select/read/wait for known postconditions.
+- VisibleControls blocks hotkey (including dialog Enter) and Shortcut clearing. Only an explicit user/testcase allowance permits AllowShortcuts, with FallbackReason and FallbackEvidence for every shortcut. Clipboard is unsupported.
 - Use `click-coordinate` only as a fallback. Record a screenshot and explain why selector-based automation was not possible.
 - Reset state with `state -Clear` at the start of repeatable test scripts.
 - Close applications and delete created test files at the end of generated scripts so the test can run again after a VM checkpoint reset or normal rerun.
@@ -184,3 +184,17 @@ Wait for a saved file:
 ## Regression checks
 
 Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\Regression.Tests.ps1`. The checks use temporary files and process mocks; they do not start or close user applications. Test both Windows PowerShell 5.1 and PowerShell 7 when changing argument binding or shared helpers.
+
+## Policy, transport, and discovery
+
+Every command defaults to `-InteractionPolicy VisibleControls`. Ordinary `type` is literal, never clipboard-based, and requires an enabled, writable field with verified keyboard focus in the working process. Newlines/tabs are limited to Document controls; they cannot submit a filename dialog. `-ClearMethod Shortcut` requires AllowShortcuts just like `hotkey`. For an explicitly authorized exception, supply `-InteractionPolicy AllowShortcuts -FallbackReason <reason> -FallbackEvidence <reference>`. Failed discovery does not itself authorize an exception.
+
+`select`/`observe` preserve identity and patterns when an element has empty/invalid bounds, returning `boundingRectangle:null`, `boundsStatus`, and `propertyErrors`. Physical input and element screenshots require valid geometry; UIA reads/Invoke do not. `-ProcessId` scopes selectors and `-ModalOnly` limits matches to modal descendants. `start` only accepts executable launches; `-RequireNewProcess` rejects existing instances.
+
+Commands acquire a desktop-session mutex before loading state and release it after recording results. `-LeaseTimeoutMs` defaults to 5000. State is replaced atomically. Logging errors become structured command failures. `outcome:unknown` after a potentially dispatched failure requires observing state before retrying; UIA provider calls still need external supervision if they hang. The mutex serializes commands, not whole multi-command workflows.
+
+For a reusable backend, import `PoTAToCli/PoTAToCli.psm1` once and call `Invoke-PotatoCliCommand -Command ... -Arguments @(...) -AsObject`. This executes the identical dispatcher and policy checks without subprocess startup or JSON parsing. Shell callers still receive one JSON object. `durationMs`, `leaseWaitMs`, and `totalDurationMs` separate backend work and lock/dispatch overhead.
+
+Additional checks: `tests/Interaction.Tests.ps1` covers policy bypass attempts, partial UIA metadata, focus guards, and concurrency without typing into user applications.
+
+Unicode keyboard input avoids keyboard-layout substitutions and sends text in bounded batches. Verification is read-only and never automatically retypes. `tests/Gui.Smoke.Tests.ps1` opens an isolated test form to verify literal Unicode input, TextPattern replacement, a visible Save action, output content, and scoped closure.

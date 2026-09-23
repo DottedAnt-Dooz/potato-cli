@@ -10,6 +10,17 @@ try {
         $script:checks = 0
         function Check($condition, $message) { if (-not $condition) { throw $message }; $script:checks++ }
         Initialize-PotatoAutomationTypes
+        Initialize-PotatoEnvironment -CliRoot $testRoot
+        $state = $script:CurrentState
+        $state.lastAction = @{ command='fixture'; ok=$true }
+        Save-PotatoState $state
+        Check ((Get-Content -LiteralPath $script:StatePath -Raw | ConvertFrom-Json).lastAction.command -eq 'fixture') 'Atomic replacement of existing state failed.'
+        $lockedLog = [IO.File]::Open((Get-PotatoLogPath), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try {
+            $failure = Invoke-PotatoCliCommand -Command state -CliRoot $testRoot -AsObject
+            Check (-not $failure.ok -and $failure.outcome -eq 'not-dispatched' -and $null -ne $failure.error) 'Log failure was hidden behind successful JSON.'
+        }
+        finally { $lockedLog.Dispose() }
         $map = ConvertTo-PotatoArgumentMap @('-OffsetX', '-12', '-Text=-literal', '-Arguments', '"a b"')
         Check ($map.OffsetX -eq '-12' -and $map.Text -eq '-literal' -and $map.Arguments -eq '"a b"') 'Argument values were altered.'
         Check ((ConvertTo-PotatoLiteralKeys 'x+^%~(){}[]') -ceq 'x{+}{^}{%}{~}{(}{)}{{}{}}{[}{]}') 'SendKeys metacharacters are not literal.'

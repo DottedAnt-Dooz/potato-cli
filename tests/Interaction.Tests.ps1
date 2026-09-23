@@ -1,0 +1,69 @@
+param()
+$ErrorActionPreference = 'Stop'
+$cliRoot = Split-Path -Parent $PSScriptRoot
+$module = Import-Module (Join-Path $cliRoot 'PoTAToCli\PoTAToCli.psm1') -Force -PassThru
+& $module {
+    $script:checks = 0
+    function Check($ok,$message) { if (-not $ok) { throw $message }; $script:checks++ }
+    function Reject([scriptblock]$body,$message) { $thrown=$false; try { & $body | Out-Null } catch {$thrown=$true}; Check $thrown $message }
+    Initialize-PotatoAutomationTypes
+    Add-Type -AssemblyName WindowsBase
+    Check ($null -eq (ConvertTo-PotatoRectangle ([Windows.Rect]::Empty))) 'Empty bounds must not throw.'
+    foreach ($value in @([double]::NaN,[double]::PositiveInfinity,[double]::NegativeInfinity,1e30)) {
+        Check ($null -eq (ConvertTo-PotatoRectangle @{X=$value;Y=0;Width=1;Height=1})) 'Invalid coordinate survived.'
+    }
+    Check ($null -eq (ConvertTo-PotatoRectangle @{X=0;Y=0;Width=0;Height=1})) 'Zero-area bounds survived.'
+    Check ((ConvertTo-PotatoRectangle @{X=-20;Y=-10;Width=1;Height=2}).x -eq -20) 'Negative monitor coordinates were clamped.'
+    $current = [pscustomobject]@{Name='Kept';AutomationId='fixture';ClassName='';LocalizedControlType='button';ProcessId=$PID;NativeWindowHandle=0;IsEnabled=$true;IsOffscreen=$true;BoundingRectangle=[Windows.Rect]::Empty;ControlType=[Windows.Automation.ControlType]::Button}
+    $element = [pscustomobject]@{Current=$current}
+    $element | Add-Member ScriptMethod GetSupportedPatterns { @() }
+    $info = ConvertTo-PotatoElementInfo $element
+    Check ($info.name -eq 'Kept' -and $info.boundsStatus -ne 'valid' -and $null -eq $info.boundingRectangle) 'Bad bounds erased identity.'
+    Reject { Get-PotatoClickPoint $element } 'Physical input accepted empty bounds.'
+    $current | Add-Member ScriptProperty ClassName { throw 'stale property' } -Force
+    $info = ConvertTo-PotatoElementInfo $element
+    Check ($info.name -eq 'Kept' -and $info.propertyErrors.Count -gt 0) 'One stale property erased others.'
+    foreach ($keys in @('^s','{ENTER}','^a')) {
+        Reject { Get-PotatoInteractionPolicy @{Keys=$keys} hotkey } 'Strict policy accepted hotkey.'
+    }
+    Reject { Get-PotatoInteractionPolicy @{PreDelete=$true;ClearMethod='Shortcut'} type } 'Strict policy accepted Ctrl+A clearing.'
+    Reject { Get-PotatoInteractionPolicy @{InteractionPolicy='AllowShortcuts';Keys='^s'} hotkey } 'Unaudited fallback accepted.'
+    $allow = @{InteractionPolicy='AllowShortcuts';Keys='^s';FallbackReason='Fixture authorization';FallbackEvidence='observation-1'}
+    Check (Get-PotatoInteractionPolicy $allow hotkey).shortcutUsed 'Explicit shortcut lost audit.'
+    foreach ($keys in @('^c','^{V}','+{INSERT}','^(s)','^s^s','+{DEL}')) {
+        $allow.Keys=$keys
+        Reject { Get-PotatoInteractionPolicy $allow hotkey } 'Clipboard/compound shortcut accepted.'
+    }
+    Reject { Get-PotatoInteractionPolicy @{ProcessName='example.document'} start } 'File association launch accepted.'
+    Reject { Get-PotatoInteractionPolicy @{Text=[string][char]22} type } 'Clipboard control character accepted as text.'
+    Check ((Get-PotatoInteractionPolicy @{Text='^s literal'} type).mode -eq 'VisibleControls') 'Literal text was treated as hotkey.'
+    $script:CurrentState = [pscustomobject]@{working=@{processId=$PID}}
+    $field = [pscustomobject]@{Current=[pscustomobject]@{IsEnabled=$true;HasKeyboardFocus=$true;ProcessId=$PID;ControlType=[Windows.Automation.ControlType]::Edit}}
+    $field | Add-Member ScriptMethod TryGetCurrentPattern { param($id,$value) $value.Value=[pscustomobject]@{Current=@{IsReadOnly=$false}}; return $true }
+    Assert-PotatoTextTarget $field 'literal'; $script:checks++
+    Reject { Assert-PotatoTextTarget $field "submit`n" } 'Dialog Enter hidden in type was accepted.'
+    $field.Current.HasKeyboardFocus=$false
+    Reject { Assert-PotatoTextTarget $field 'literal' } 'Unfocused input accepted.'
+    $field.Current.HasKeyboardFocus=$true; $field.Current.ProcessId=-1
+    Reject { Assert-PotatoTextTarget $field 'literal' } 'Wrong-process input accepted.'
+
+    # A separate runspace holds the desktop mutex; competing commands must not dispatch.
+    $ready = New-Object Threading.ManualResetEvent($false)
+    $release = New-Object Threading.ManualResetEvent($false)
+    $worker = [powershell]::Create()
+    [void]$worker.AddScript({param($ready,$release,$sessionId)
+        $m=New-Object Threading.Mutex($false,"Local\PoTATo.Desktop.$sessionId")
+        try { [void]$m.WaitOne(); [void]$ready.Set(); [void]$release.WaitOne(10000) }
+        finally { $m.ReleaseMutex(); $m.Dispose() }
+    }).AddArgument($ready).AddArgument($release).AddArgument([Diagnostics.Process]::GetCurrentProcess().SessionId)
+    $pending=$worker.BeginInvoke()
+    try {
+        Check ($ready.WaitOne(5000)) 'Lease fixture did not start.'
+        $busy = Invoke-PotatoCliCommand hotkey @('-Keys','^s','-LeaseTimeoutMs','0') -AsObject
+        Check ($busy.error.type -eq 'DesktopLeaseError' -and $busy.outcome -eq 'not-dispatched') 'Competing command was not stopped.'
+    }
+    finally { [void]$release.Set(); $worker.EndInvoke($pending) | Out-Null; $worker.Dispose(); $ready.Dispose(); $release.Dispose() }
+    $blocked = Invoke-PotatoCliCommand hotkey @('-Keys','^s') -AsObject
+    Check ($blocked.error.type -eq 'InteractionPolicyViolation' -and $blocked.outcome -eq 'not-dispatched') 'Policy failure was not structured.'
+    "Interaction checks: $script:checks passed"
+}
