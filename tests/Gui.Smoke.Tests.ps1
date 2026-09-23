@@ -18,7 +18,17 @@ $field.AccessibleName='Fixture input'; $field.Top=20; $field.Left=20; $field.Wid
 $button=New-Object Windows.Forms.Button
 $button.AccessibleName='Fixture save'; $button.Text='Save'; $button.Top=70; $button.Left=20
 $button.Add_Click({[IO.File]::WriteAllText($Output,$field.Text)})
-$form.Controls.AddRange(@($field,$button)); $form.Add_Shown({[IO.File]::WriteAllText(($Output+'.ready'),$form.Text); $field.Focus()})
+$modalButton=New-Object Windows.Forms.Button
+$modalButton.AccessibleName='Fixture modal opener'; $modalButton.Text='Open modal'; $modalButton.Top=70; $modalButton.Left=120; $modalButton.Width=110
+$modalButton.Add_Click({
+    $dialog=New-Object Windows.Forms.Form
+    $dialog.Text='Fixture modal'; $dialog.Width=260; $dialog.Height=120
+    $cancel=New-Object Windows.Forms.Button
+    $cancel.Text='Cancel'; $cancel.AccessibleName='Fixture cancel'; $cancel.DialogResult=[Windows.Forms.DialogResult]::Cancel
+    $dialog.Controls.Add($cancel)
+    try { [void]$dialog.ShowDialog($form) } finally { $dialog.Dispose() }
+})
+$form.Controls.AddRange(@($field,$button,$modalButton)); $form.Add_Shown({[IO.File]::WriteAllText(($Output+'.ready'),$form.Text); $field.Focus()})
 # Consume the hidden process startup window state before displaying the test form.
 $form.Show(); $form.Hide()
 [void]$form.ShowDialog()
@@ -54,9 +64,14 @@ $form.Show(); $form.Hide()
     Invoke-Fixture click @('-Name','Fixture save','-ControlType','Button','-Method','Invoke') | Out-Null
     $wait=Invoke-Fixture wait-file @('-Path',$output,'-TimeoutMs','3000','-MinBytes','1','-StableMs','100')
     if (-not $wait.data.conditionMet -or [IO.File]::ReadAllText($output) -cne $literal) { throw 'Visible save button did not persist literal content.' }
+    Invoke-Fixture click @('-Name','Fixture modal opener','-ControlType','Button','-Method','Invoke') | Out-Null
+    $modal=Invoke-Fixture select @('-Name','Fixture cancel','-ControlType','Button','-ProcessId',"$($child.Id)",'-ModalOnly','-TimeoutMs','2000')
+    if ($modal.data.count -ne 1) { throw 'Modal selector did not cross the parent window boundary.' }
+    $windows=Invoke-Fixture windows @('-ProcessId',"$($child.Id)")
+    if (@($windows.data.windows | Where-Object {$_.isModal}).Count -ne 1) { $windows.data.windows | ConvertTo-Json -Depth 8; throw 'Modal window was not identified.' }
     Invoke-Fixture close-window @('-ProcessId',"$($child.Id)") | Out-Null
     if (-not $child.WaitForExit(3000)) { throw 'Fixture window did not close.' }
-    'GUI smoke: focused writable input, literal typing/readback, UIA button invocation, stable output, and scoped close passed.'
+    'GUI smoke: literal input/readback, visible save, modal discovery, and dialog-first scoped close passed.'
 }
 finally {
     if ($child -and -not $child.HasExited) { $child.Kill(); $child.WaitForExit() }

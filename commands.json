@@ -45,7 +45,8 @@
       "usage": "focus -ProcessName app [-WindowTitle '*title*'] [-ProcessId 1234] [-Maximize] [-TimeoutMs 5000]"
     },
     "windows": {
-      "usage": "windows [-ProcessName app] [-WindowTitle '*title*'] [-TimeoutMs 0]"
+      "usage": "windows [-ProcessName app] [-WindowTitle '*title*'] [-TimeoutMs 0]",
+      "notes": "With ProcessId, includes modal Window descendants exposed beneath the owner in UIA; data.windows includes isModal. Close owned dialogs before parent windows."
     },
     "observe": {
       "usage": "observe [-Depth 2] [-MaxElements 120]",
@@ -64,8 +65,8 @@
       "notes": "Fallback only; retain a screenshot and explain the missing selector route."
     },
     "type": {
-      "usage": "type -Text 'literal text' [<selector options>] [-PreDelete] [-ClearMethod Selection|Shortcut] [-Verify] [-UseWildcardForVerify] [-MaxAttempts 5] [-TypeByCharacter] [-Focus]",
-      "notes": "Sends literal Unicode keyboard events, including text that resembles hotkey syntax. No clipboard. PreDelete defaults to UIA TextPattern selection plus Backspace; Shortcut explicitly uses Ctrl+A and must be permitted. Verify reads ValuePattern/TextPattern and never retypes on failure. UseWildcardForVerify means literal substring containment, not a wildcard expression. MaxAttempts controls read-only verification polls. Requires confirmed focus in a writable control owned by the working application. Newlines/tabs are limited to Document controls. Shortcut clearing is blocked under VisibleControls."
+      "usage": "type -Text 'literal text' [<selector options>] [-PreDelete] [-ClearMethod Selection|Shortcut] [-Verify] [-VerifyMode Exact|Contains|NormalizedExact|NormalizedContains] [-VerifyTimeoutMs 3000] [-MaxAttempts 0] [-TypeByCharacter] [-Focus]",
+      "notes": "Sends literal Unicode keyboard events; no clipboard. Focus, process ownership, and writability are checked. -Verify polls UIA readback up to VerifyTimeoutMs without resending input; MaxAttempts 0 uses the deadline. Normalized modes reconcile line endings. UseWildcardForVerify remains an alias for literal Contains. Failure returns verification attempts, observed length, and read error without exposing field contents. -TimeoutMs applies to selector lookup, not readback. PreDelete uses TextPattern selection plus Backspace by default; Shortcut clearing requires explicit allowance."
     },
     "hotkey": {
       "usage": "hotkey -Keys ^s -InteractionPolicy AllowShortcuts -FallbackReason <reason> -FallbackEvidence <reference>",
@@ -96,7 +97,7 @@
     },
     "close-window": {
       "usage": "close-window [-ProcessName app] [-WindowTitle '*title*'] [-TimeoutMs 0]",
-      "notes": "With no selector, targets only the working window. An explicit selector miss never closes another working window. data.closed counts accepted close requests; inspect remaining windows for cleanup verification."
+      "notes": "With no selector, targets only the working window. A ProcessId query includes nested modal windows and closes them before the parent. An explicit selector miss never closes another working window. data.closed counts accepted close requests; inspect remaining windows for cleanup verification."
     },
     "report": {
       "usage": "report -Step 1 -Status PASS -Description 'Observed result' [-Screenshot]",

@@ -655,6 +655,14 @@ function ConvertTo-PotatoElementInfo {
     $info.supportedPatterns = @()
     try { $info.supportedPatterns = @($Element.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName.Replace('PatternIdentifiers.Pattern','') }) }
     catch { $errors += 'Supported patterns unavailable.' }
+    $info.isModal = $false
+    try {
+        $windowPattern = $null
+        if ($Element.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$windowPattern)) {
+            $info.isModal = [bool]$windowPattern.Current.IsModal
+        }
+    }
+    catch { $errors += 'Modal state unavailable.' }
     $info.propertyErrors = $errors
     return $info
 }
@@ -732,12 +740,31 @@ function Get-PotatoTopLevelWindows {
     $stopAt = (Get-Date).AddMilliseconds($TimeoutMs)
     do {
         $windows = @()
+        $processWindows = @()
         try {
             $all = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
             foreach ($window in $all) {
+                if ($Selector -and $Selector.ProcessId -and $window.Current.ProcessId -eq [int]$Selector.ProcessId) { $processWindows += $window }
                 try { $matchesSelector = -not $Selector -or (Test-PotatoElementMatch -Element $window -Selector $Selector) } catch { continue }
                 if ($matchesSelector) {
                     $windows += $window
+                }
+            }
+            # Some providers expose a modal Window beneath its owner in the UIA
+            # tree, rather than as a desktop child. A PID-scoped query must see it.
+            if ($Selector -and $Selector.ProcessId) {
+                $windowCondition = New-Object System.Windows.Automation.PropertyCondition(
+                    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                    [System.Windows.Automation.ControlType]::Window)
+                foreach ($owner in $processWindows) {
+                    try {
+                        $nested = $owner.FindAll([System.Windows.Automation.TreeScope]::Descendants, $windowCondition)
+                        foreach ($candidate in $nested) {
+                            if (-not (Test-PotatoModalAncestor $candidate)) { continue }
+                            if (Test-PotatoElementMatch -Element $candidate -Selector $Selector) { $windows += $candidate }
+                        }
+                    }
+                    catch {}
                 }
             }
         }
@@ -976,7 +1003,8 @@ function Resolve-PotatoCommandTarget {
     $path = $inputs.path
     $selector = $inputs.selector
     $parent = $null
-    $pathResult = Resolve-PotatoSelectorPath -Path $path
+    $scopeRoot = if ($selector.ModalOnly) { Get-PotatoRootElement } else { $null }
+    $pathResult = Resolve-PotatoSelectorPath -Path $path -StartParent $scopeRoot
     if (-not $pathResult.ok) {
         return [ordered]@{ ok = $false; error = "Selector path failed at index $($pathResult.failedIndex)."; element = $null; selector = $selector }
     }
@@ -1002,7 +1030,8 @@ function Invoke-PotatoSelect {
     )
 
     $inputs = Get-PotatoSelectorInputs -ArgsMap $ArgsMap
-    $pathResult = Resolve-PotatoSelectorPath -Path $inputs.path
+    $scopeRoot = if ($inputs.selector.ModalOnly) { Get-PotatoRootElement } else { $null }
+    $pathResult = Resolve-PotatoSelectorPath -Path $inputs.path -StartParent $scopeRoot
     if (-not $pathResult.ok) { throw "Selector path failed at index $($pathResult.failedIndex)." }
 
     $maxResults = ConvertTo-PotatoInt (Get-PotatoArg -ArgsMap $ArgsMap -Names @('MaxResults')) 20
@@ -1269,6 +1298,44 @@ function Get-PotatoEditableText {
     throw 'Text verification requires ValuePattern or TextPattern on the target; its name is not text evidence.'
 }
 
+function Test-PotatoTypedTextMatch {
+    param([string] $Actual, [string] $Expected,
+          [ValidateSet('Exact','Contains','NormalizedExact','NormalizedContains')] [string] $Mode = 'Exact')
+    if ($Mode -like 'Normalized*') {
+        $Actual = $Actual.Replace("`r`n", "`n").Replace("`r", "`n").Replace([char]0x2028, "`n").Replace([char]0x2029, "`n")
+        $Expected = $Expected.Replace("`r`n", "`n").Replace("`r", "`n").Replace([char]0x2028, "`n").Replace([char]0x2029, "`n")
+    }
+    if ($Mode -like '*Contains') { return $Actual.IndexOf($Expected, [StringComparison]::Ordinal) -ge 0 }
+    return $Actual -ceq $Expected
+}
+
+function Wait-PotatoTypedText {
+    param([object] $Element, [string] $Expected, [string] $Mode,
+          [ValidateRange(0,60000)] [int] $TimeoutMs,
+          [ValidateRange(0,1000)] [int] $MaxAttempts = 0)
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $attempts = 0
+    $lastLength = $null
+    $lastReadError = $null
+    do {
+        $attempts++
+        try {
+            $actual = Get-PotatoEditableText -Element $Element
+            $lastLength = $actual.Length
+            $lastReadError = $null
+            if (Test-PotatoTypedTextMatch -Actual $actual -Expected $Expected -Mode $Mode) {
+                return [ordered]@{ verified=$true; attempts=$attempts; elapsedMs=$watch.ElapsedMilliseconds
+                    mode=$Mode; observedLength=$lastLength; readError=$null }
+            }
+        }
+        catch { $lastReadError = $_.Exception.Message }
+        if (($MaxAttempts -gt 0 -and $attempts -ge $MaxAttempts) -or $watch.ElapsedMilliseconds -ge $TimeoutMs) { break }
+        Start-Sleep -Milliseconds ([int][Math]::Min(100, [Math]::Max(1, $TimeoutMs - $watch.ElapsedMilliseconds)))
+    } while ($true)
+    return [ordered]@{ verified=$false; attempts=$attempts; elapsedMs=$watch.ElapsedMilliseconds
+        mode=$Mode; observedLength=$lastLength; readError=$lastReadError }
+}
+
 function Invoke-PotatoType {
     [CmdletBinding()]
     param(
@@ -1285,8 +1352,12 @@ function Invoke-PotatoType {
     $verify = ConvertTo-PotatoBool (Get-PotatoArg -ArgsMap $ArgsMap -Names @('Verify')) $false
     $typeByCharacter = ConvertTo-PotatoBool (Get-PotatoArg -ArgsMap $ArgsMap -Names @('TypeByCharacter')) $false
     $useWildcard = ConvertTo-PotatoBool (Get-PotatoArg -ArgsMap $ArgsMap -Names @('UseWildcardForVerify')) $false
-    $maxAttempts = ConvertTo-PotatoInt (Get-PotatoArg -ArgsMap $ArgsMap -Names @('MaxAttempts')) 5
-    if ($maxAttempts -lt 1) { throw 'MaxAttempts must be at least 1.' }
+    $verifyMode = [string](Get-PotatoArg -ArgsMap $ArgsMap -Names @('VerifyMode') -Default $(if ($useWildcard) { 'Contains' } else { 'Exact' }))
+    if ($verifyMode -notin @('Exact','Contains','NormalizedExact','NormalizedContains')) { throw 'VerifyMode must be Exact, Contains, NormalizedExact, or NormalizedContains.' }
+    $verifyTimeoutMs = ConvertTo-PotatoInt (Get-PotatoArg -ArgsMap $ArgsMap -Names @('VerifyTimeoutMs')) 3000
+    if ($verifyTimeoutMs -lt 0 -or $verifyTimeoutMs -gt 60000) { throw 'VerifyTimeoutMs must be between 0 and 60000.' }
+    $maxAttempts = ConvertTo-PotatoInt (Get-PotatoArg -ArgsMap $ArgsMap -Names @('MaxAttempts')) 0
+    if ($maxAttempts -lt 0 -or $maxAttempts -gt 1000) { throw 'MaxAttempts must be between 0 and 1000; 0 uses the verification deadline.' }
 
     if ($focus) {
         $working = Get-PotatoWorkingElement
@@ -1334,22 +1405,16 @@ function Invoke-PotatoType {
 
     & $sendText $text $typeByCharacter
     $typedOk = $null
+    $verification = $null
     if ($verify) {
-        $typedOk = $false
-        for ($i = 0; $i -lt $maxAttempts; $i++) {
-            if ($i -gt 0) { Start-Sleep -Milliseconds 100 }
-            $actual = Get-PotatoEditableText -Element $element
-            if (($useWildcard -and $actual.IndexOf([string]$text, [System.StringComparison]::Ordinal) -ge 0) -or (-not $useWildcard -and $actual -ceq $text)) {
-                $typedOk = $true
-                break
-            }
-        }
+        $verification = Wait-PotatoTypedText -Element $element -Expected ([string]$text) -Mode $verifyMode -TimeoutMs $verifyTimeoutMs -MaxAttempts $maxAttempts
+        $typedOk = [bool]$verification.verified
     }
 
     $script:CurrentState.lastAction = [ordered]@{ command = 'type'; ok = ($typedOk -ne $false); timestamp = (Get-Date).ToString('o') }
     Save-PotatoState -State $script:CurrentState
 
-    [ordered]@{ typed = $true; textLength = ([string]$text).Length; verified = $typedOk; verificationPerformed = $verify; inputMethod = 'UnicodeKeyboard'; clearMethod = $(if ($preDelete) { $clearMethod } else { $null }) }
+    [ordered]@{ typed = $true; textLength = ([string]$text).Length; verified = $typedOk; verificationPerformed = $verify; verification = $verification; inputMethod = 'UnicodeKeyboard'; clearMethod = $(if ($preDelete) { $clearMethod } else { $null }) }
 }
 
 function Invoke-PotatoHotkey {
@@ -1630,6 +1695,11 @@ function Invoke-PotatoCloseWindow {
     $closed = 0
     $matchedHandles = @()
     $matchedProcessIds = @()
+    # Close dialogs before their parent; closing the parent first can raise a
+    # second warning and strand both windows.
+    $windows = @($windows | Sort-Object -Property @{ Expression = {
+        try { if (Test-PotatoModalAncestor $_) { 0 } else { 1 } } catch { 1 }
+    } })
     foreach ($window in $windows) {
         $matchedHandles += [int64]$window.Current.NativeWindowHandle
         $matchedProcessIds += [int]$window.Current.ProcessId
@@ -1814,7 +1884,12 @@ function Invoke-PotatoCliCommandCore {
         }
         if ($result.verificationPerformed -and $result.verified -eq $false) {
             $ok = $false
-            $errorObject = [ordered]@{ message = 'The requested verification failed. Input was not repeated.'; type = 'VerificationFailed'; category = 'InvalidResult' }
+            $detail = if ($result.verification) {
+                'Mode {0}; {1} read(s) over {2} ms; observed length {3}.' -f
+                    $result.verification.mode, $result.verification.attempts,
+                    $result.verification.elapsedMs, $result.verification.observedLength
+            } else { 'No readback details were available.' }
+            $errorObject = [ordered]@{ message = "The requested verification failed. $detail Input was not repeated."; type = 'VerificationFailed'; category = 'InvalidResult' }
         }
         Write-PotatoLog -Command $normalized -Level Success -Message "Command completed."
     }

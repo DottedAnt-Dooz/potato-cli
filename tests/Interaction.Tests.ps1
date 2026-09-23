@@ -46,6 +46,15 @@ $module = Import-Module (Join-Path $cliRoot 'PoTAToCli\PoTAToCli.psm1') -Force -
     Reject { Assert-PotatoTextTarget $field 'literal' } 'Unfocused input accepted.'
     $field.Current.HasKeyboardFocus=$true; $field.Current.ProcessId=-1
     Reject { Assert-PotatoTextTarget $field 'literal' } 'Wrong-process input accepted.'
+    Check (-not (Test-PotatoTypedTextMatch "first`r`nsecond" "first`nsecond" Exact)) 'Exact mode hid line-ending differences.'
+    Check (Test-PotatoTypedTextMatch "first`r`nsecond" "first`nsecond" NormalizedExact) 'Normalized readback failed.'
+    Check (Test-PotatoTypedTextMatch "prefix`r`nmarker`r`nend" "marker`nend" NormalizedContains) 'Normalized containment failed.'
+    $script:readCount=0
+    function Get-PotatoEditableText { param($Element) $script:readCount++; if ($script:readCount -lt 6) {return 'stale'}; return 'updated' }
+    $eventual=Wait-PotatoTypedText -Element $field -Expected 'updated' -Mode Exact -TimeoutMs 1200
+    Check ($eventual.verified -and $eventual.attempts -eq 6 -and $eventual.elapsedMs -ge 400) 'Delayed UIA readback was falsely failed.'
+    $unmatched=Wait-PotatoTypedText -Element $field -Expected 'absent' -Mode Exact -TimeoutMs 120
+    Check (-not $unmatched.verified -and $unmatched.observedLength -eq 7) 'Unmatched input was falsely verified.'
 
     # A separate runspace holds the desktop mutex; competing commands must not dispatch.
     $ready = New-Object Threading.ManualResetEvent($false)
