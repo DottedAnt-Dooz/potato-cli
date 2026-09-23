@@ -85,6 +85,14 @@ try {
         $script:stopped = $null
         $result = Invoke-PotatoStart @{ProcessName='sample.exe';KillExisting=$true}
         Check ($script:stopped -eq 'sample') 'Bare .exe name did not match the process name.'
+        $script:processLookups = 0
+        function Get-Process { param($Name) $script:processLookups++; if ($script:processLookups -eq 1) { [pscustomobject]@{Id=99;ProcessName='sample'} } }
+        $result = Invoke-PotatoStart @{ProcessName='sample.exe';RequireNewProcess=$true;WaitForPreviousExitMs=500}
+        Check ($script:processLookups -ge 2 -and $result.ownedProcessId -eq 123) 'New-process launch did not wait for a closing instance and retain its owned PID.'
+        function Get-Process { param($Name) [pscustomobject]@{Id=99;ProcessName='sample'} }
+        $threw=$false
+        try { Invoke-PotatoStart @{ProcessName='sample.exe';RequireNewProcess=$true;WaitForPreviousExitMs=0} | Out-Null } catch { $threw=$_.Exception.Message -like 'Application is already running*' }
+        Check $threw 'Strict start accepted a still-running prior instance.'
 
         $script:CurrentState = [pscustomobject]@{working=$null}
         function Get-PotatoTopLevelWindows { throw 'A selector-less close must not enumerate the desktop.' }
@@ -114,6 +122,18 @@ Export-ModuleMember -Function Invoke-PotatoCliCommand
     $help = & (Join-Path $cliRoot 'potato.ps1') help -Topic type | ConvertFrom-Json
     if (-not $help.ok -or $help.data.topic -ne 'type') { throw 'Command help failed.' }
     'CLI entry/help checks: 2 passed'
+
+    $streamLines=@(
+        '{"requestId":"help-1","command":"help","arguments":["-Topic","type"]}',
+        '{"requestId":"help-2","command":"help","arguments":["-Topic","click"]}',
+        '{"requestId":"end-1","command":"quit"}'
+    )
+    $streamResults=@($streamLines | & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $cliRoot 'potato-stream.ps1') | ForEach-Object { $_ | ConvertFrom-Json })
+    if ($LASTEXITCODE -ne 0 -or $streamResults.Count -ne 3 -or @($streamResults | Where-Object { -not $_.ok }).Count -ne 0 -or
+        $streamResults[0].requestId -ne 'help-1' -or $streamResults[1].requestId -ne 'help-2' -or $streamResults[2].command -ne 'quit') {
+        throw ("Sequential CLI stream failed: exit=$LASTEXITCODE count=$($streamResults.Count) ids=$(@($streamResults | ForEach-Object { $_.requestId }) -join ',') ok=$(@($streamResults | ForEach-Object { $_.ok }) -join ',') firstError=$($streamResults[0].error.message).")
+    }
+    'CLI stream checks: 1 passed'
 }
 finally {
     # testRoot is an explicitly created unique temp directory; verify before recursion.

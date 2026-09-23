@@ -50,8 +50,8 @@ function Enter-PotatoDesktopLease {
 }
 
 function Assert-PotatoTextTarget {
-    param([object] $Element, [string] $Text)
-    if (-not $Element -or -not $Element.Current.IsEnabled -or -not $Element.Current.HasKeyboardFocus) {
+    param([object] $Element, [string] $Text, [bool] $RequireFocus = $true)
+    if (-not $Element -or -not $Element.Current.IsEnabled -or ($RequireFocus -and -not $Element.Current.HasKeyboardFocus)) {
         throw 'Text input requires an enabled control with confirmed keyboard focus.'
     }
     if (-not $script:CurrentState.working -or $Element.Current.ProcessId -ne $script:CurrentState.working.processId) {

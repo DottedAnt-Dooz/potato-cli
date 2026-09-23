@@ -38,8 +38,8 @@
       "notes": "Clear resets CLI context, not application state."
     },
     "start": {
-      "usage": "start -ProcessName app.exe [-Arguments='quoted process arguments'] [-WaitForWindowMs 15000] [-Maximize] [-KillExisting] [-RequireNewProcess]",
-      "notes": "FilePath/Path and positional launch target are also accepted. KillExisting is destructive and must only be used for disposable test-owned apps. Check data.windowFound. A file-association launch does not exercise an application's Open UI. Only executable launches are accepted. RequireNewProcess rejects an already-running app and returns ownedProcessId for scoped cleanup."
+      "usage": "start -ProcessName app.exe [-Arguments='quoted process arguments'] [-WaitForWindowMs 15000] [-Maximize] [-KillExisting] [-RequireNewProcess] [-WaitForPreviousExitMs 3000]",
+      "notes": "FilePath/Path and positional launch target are also accepted. KillExisting is destructive and must only be used for disposable test-owned apps. Check data.windowFound. A file-association launch does not exercise an application's Open UI. Only executable launches are accepted. RequireNewProcess waits briefly for a closing prior instance, rejects a still-running app, and returns ownedProcessId for scoped cleanup."
     },
     "focus": {
       "usage": "focus -ProcessName app [-WindowTitle '*title*'] [-ProcessId 1234] [-Maximize] [-TimeoutMs 5000]"
@@ -65,8 +65,8 @@
       "notes": "Fallback only; retain a screenshot and explain the missing selector route."
     },
     "type": {
-      "usage": "type -Text 'literal text' [<selector options>] [-PreDelete] [-ClearMethod Selection|Shortcut] [-Verify] [-VerifyMode Exact|Contains|NormalizedExact|NormalizedContains] [-VerifyTimeoutMs 3000] [-MaxAttempts 0] [-TypeByCharacter] [-Focus]",
-      "notes": "Sends literal Unicode keyboard events; no clipboard. Focus, process ownership, and writability are checked. -Verify polls UIA readback up to VerifyTimeoutMs without resending input; MaxAttempts 0 uses the deadline. Normalized modes reconcile line endings. UseWildcardForVerify remains an alias for literal Contains. Failure returns verification attempts, observed length, and read error without exposing field contents. -TimeoutMs applies to selector lookup, not readback. PreDelete uses TextPattern selection plus Backspace by default; Shortcut clearing requires explicit allowance."
+      "usage": "type -Text 'literal text' [<selector options>] [-FocusMethod Auto|UIA|Mouse] [-PreDelete] [-ClearMethod Selection|Shortcut] [-Verify] [-VerifyMode Exact|Contains|NormalizedExact|NormalizedContains] [-VerifyTimeoutMs 3000] [-MaxAttempts 0] [-TypeByCharacter] [-Focus]",
+      "notes": "Sends literal Unicode keyboard events; no clipboard. With an explicit selector, Auto tries UIA focus then a visible mouse click if focus is unconfirmed; Mouse requests visible click focus directly. The target must be enabled, writable, and confirmed focused before any text is sent. A separate click is usually unnecessary. -Verify polls UIA readback up to VerifyTimeoutMs without resending input; MaxAttempts 0 uses the deadline. Normalized modes reconcile line endings. UseWildcardForVerify remains an alias for literal Contains. Failure returns verification attempts, observed length, and read error without exposing field contents. -TimeoutMs applies to selector lookup, not readback. PreDelete uses TextPattern selection plus Backspace by default; Shortcut clearing requires explicit allowance."
     },
     "hotkey": {
       "usage": "hotkey -Keys ^s -InteractionPolicy AllowShortcuts -FallbackReason <reason> -FallbackEvidence <reference>",

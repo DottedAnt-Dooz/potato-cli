@@ -830,9 +830,18 @@ function Invoke-PotatoStart {
         $targetProcessName = [System.IO.Path]::GetFileNameWithoutExtension($filePath)
     }
 
-    $existingIds = @(Get-Process -Name $targetProcessName -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
     $requireNew = ConvertTo-PotatoBool (Get-PotatoArg $ArgsMap @('RequireNewProcess')) $false
-    if ($requireNew -and $existingIds.Count) { throw 'Application is already running. Use a clean test session; do not reuse an unrelated document.' }
+    $priorExitWaitMs = ConvertTo-PotatoInt (Get-PotatoArg $ArgsMap @('WaitForPreviousExitMs')) 3000
+    if ($priorExitWaitMs -lt 0 -or $priorExitWaitMs -gt 60000) { throw 'WaitForPreviousExitMs must be between 0 and 60000.' }
+    $existingIds = @(Get-Process -Name $targetProcessName -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+    if ($requireNew -and $existingIds.Count) {
+        $wait = [Diagnostics.Stopwatch]::StartNew()
+        while ($existingIds.Count -and $wait.ElapsedMilliseconds -lt $priorExitWaitMs) {
+            Start-Sleep -Milliseconds ([int][Math]::Min(100, [Math]::Max(1, $priorExitWaitMs - $wait.ElapsedMilliseconds)))
+            $existingIds = @(Get-Process -Name $targetProcessName -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+        }
+        if ($existingIds.Count) { throw 'Application is already running. Use a clean test session; do not reuse an unrelated document.' }
+    }
     if ($killExisting) {
         Get-Process -ErrorAction SilentlyContinue |
             Where-Object { $_.ProcessName -eq $targetProcessName -or ($filePath -and $_.Path -eq $filePath) } |
@@ -849,6 +858,16 @@ function Invoke-PotatoStart {
         [void](Show-PotatoWindow -Handle $working.nativeWindowHandle -Maximize:$maximize)
     }
 
+    $ownedProcessId = $null
+    $startedId = [int]$started.Id
+    if ($startedId -gt 0 -and $existingIds -notcontains $startedId) { $ownedProcessId = $startedId }
+    if ($window) {
+        $windowProcessId = [int]$window.Current.ProcessId
+        if ($windowProcessId -gt 0 -and $existingIds -notcontains $windowProcessId) { $ownedProcessId = $windowProcessId }
+    }
+    if ($requireNew -and -not $ownedProcessId -and $startedId -gt 0) { $ownedProcessId = $startedId }
+    if ($requireNew -and -not $ownedProcessId) { throw 'New-process launch returned no process ID for scoped cleanup.' }
+
     [ordered]@{
         process = [ordered]@{
             id = $started.Id
@@ -857,7 +876,7 @@ function Invoke-PotatoStart {
         }
         working = $working
         windowFound = [bool]$window
-        ownedProcessId = $(if ($window -and $window.Current.ProcessId -notin $existingIds) { $window.Current.ProcessId } elseif ($started.Id -and $started.Id -notin $existingIds) { $started.Id } else { $null })
+        ownedProcessId = $ownedProcessId
     }
 }
 
@@ -1355,6 +1374,8 @@ function Invoke-PotatoType {
     if ($verifyTimeoutMs -lt 0 -or $verifyTimeoutMs -gt 60000) { throw 'VerifyTimeoutMs must be between 0 and 60000.' }
     $maxAttempts = ConvertTo-PotatoInt (Get-PotatoArg -ArgsMap $ArgsMap -Names @('MaxAttempts')) 0
     if ($maxAttempts -lt 0 -or $maxAttempts -gt 1000) { throw 'MaxAttempts must be between 0 and 1000; 0 uses the verification deadline.' }
+    $requestedFocusMethod = [string](Get-PotatoArg -ArgsMap $ArgsMap -Names @('FocusMethod') -Default 'Auto')
+    if ($requestedFocusMethod -notin @('Auto','UIA','Mouse')) { throw 'FocusMethod must be Auto, UIA, or Mouse.' }
 
     if ($focus) {
         $working = Get-PotatoWorkingElement
@@ -1362,12 +1383,28 @@ function Invoke-PotatoType {
     }
 
     $element = [System.Windows.Automation.AutomationElement]::FocusedElement
-    if ($ArgsMap.ContainsKey('SelectorJson') -or $ArgsMap.ContainsKey('PathJson') -or $ArgsMap.ContainsKey('AutomationId') -or $ArgsMap.ContainsKey('Name') -or $ArgsMap.ContainsKey('ControlType')) {
+    $hasTargetSelector = $ArgsMap.ContainsKey('SelectorJson') -or $ArgsMap.ContainsKey('PathJson') -or $ArgsMap.ContainsKey('AutomationId') -or $ArgsMap.ContainsKey('Name') -or $ArgsMap.ContainsKey('ControlType')
+    $usedFocusMethod = 'ExistingFocus'
+    if ($hasTargetSelector) {
         $target = Resolve-PotatoCommandTarget -ArgsMap $ArgsMap -AllowPathAsTarget
         if (-not $target.ok) { throw $target.error }
         $element = $target.element
-        $element.SetFocus()
+        Assert-PotatoTextTarget -Element $element -Text ([string]$text) -RequireFocus:$false
+        if ($requestedFocusMethod -ne 'Mouse') {
+            try { $element.SetFocus() } catch { if ($requestedFocusMethod -eq 'UIA') { throw } }
+            $usedFocusMethod = 'UIA'
+        }
+        if ($requestedFocusMethod -eq 'Mouse' -or ($requestedFocusMethod -eq 'Auto' -and -not $element.Current.HasKeyboardFocus)) {
+            if ($element.Current.IsOffscreen) { throw 'Mouse focus requires a visible text control.' }
+            $working = Get-PotatoWorkingElement
+            if ($working) { [void](Show-PotatoWindow -Handle $working.Current.NativeWindowHandle) }
+            $point = Get-PotatoClickPoint -Element $element
+            Move-PotatoMouse -X $point.x -Y $point.y
+            Invoke-PotatoMouseClick -Button 'Left'
+            $usedFocusMethod = 'Mouse'
+        }
     }
+    elseif ($requestedFocusMethod -ne 'Auto') { throw 'FocusMethod UIA or Mouse requires an explicit text target selector.' }
     Assert-PotatoTextTarget -Element $element -Text ([string]$text)
     $clearMethod = [string](Get-PotatoArg -ArgsMap $ArgsMap -Names @('ClearMethod') -Default 'Selection')
     if ($clearMethod -notin @('Selection', 'Shortcut')) { throw 'ClearMethod must be Selection or Shortcut.' }
@@ -1411,7 +1448,7 @@ function Invoke-PotatoType {
     $script:CurrentState.lastAction = [ordered]@{ command = 'type'; ok = ($typedOk -ne $false); timestamp = (Get-Date).ToString('o') }
     Save-PotatoState -State $script:CurrentState
 
-    [ordered]@{ typed = $true; textLength = ([string]$text).Length; verified = $typedOk; verificationPerformed = $verify; verification = $verification; inputMethod = 'UnicodeKeyboard'; clearMethod = $(if ($preDelete) { $clearMethod } else { $null }) }
+    [ordered]@{ typed = $true; textLength = ([string]$text).Length; verified = $typedOk; verificationPerformed = $verify; verification = $verification; inputMethod = 'UnicodeKeyboard'; focusMethod = $usedFocusMethod; clearMethod = $(if ($preDelete) { $clearMethod } else { $null }) }
 }
 
 function Invoke-PotatoHotkey {

@@ -63,8 +63,8 @@ $form.Show(); $form.Hide()
     catch { (Invoke-Fixture read @('-Name','Fixture input')).data | ConvertTo-Json -Depth 5; throw }
     if ($typed.data.verified -ne $true) { throw 'Literal input did not verify.' }
     $literal='Replacement ^v{ENTER} '+[char]0x151+[char]0x171+[char]0x4e2d+[char]0x6587+[char]::ConvertFromUtf32(0x1f642)
-    $typed=Invoke-Fixture type @('-Name','Fixture input','-ControlType','Edit','-Text',$literal,'-PreDelete','-Verify')
-    if ($typed.data.verified -ne $true -or $typed.data.clearMethod -ne 'Selection') { throw 'Unicode/selection replacement failed.' }
+    $typed=Invoke-Fixture type @('-Name','Fixture input','-ControlType','Edit','-Text',$literal,'-PreDelete','-Verify','-FocusMethod','Mouse')
+    if ($typed.data.verified -ne $true -or $typed.data.clearMethod -ne 'Selection' -or $typed.data.focusMethod -ne 'Mouse') { throw 'Unicode/selection replacement with visible mouse focus failed.' }
     $saveClick=Invoke-Fixture click @('-Name','Fixture save','-ControlType','Button','-Method','Auto')
     if ($saveClick.data.action -ne 'InvokePattern') { throw 'Auto did not use the supported UIA action.' }
     $wait=Invoke-Fixture wait-file @('-Path',$output,'-TimeoutMs','3000','-MinBytes','1','-StableMs','100')
