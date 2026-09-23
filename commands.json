@@ -58,7 +58,7 @@
     },
     "click": {
       "usage": "click <selector options> [-Method Auto|Mouse|Invoke] [-Center true] [-Button Left|Right] [-Focus false] [-ElementFocus false] [-OffsetX 0] [-OffsetY 0] [-VerifyDisappeared]",
-      "notes": "Auto tries UIA patterns then mouse. Mouse uses the selected control's live geometry. Invoke requires InvokePattern. Methods are explicit; do not retry a possibly completed action without observing its result."
+      "notes": "Use Auto unless a specific actuation method is required. Auto tries UIA patterns then a visible mouse click; Mouse uses live geometry. Invoke requires InvokePattern and reports supported patterns when unavailable. Methods are explicit; do not retry a possibly completed action without observing its result."
     },
     "click-coordinate": {
       "usage": "click-coordinate -X 100 -Y 100 [-Button Left|Right]",
@@ -81,7 +81,7 @@
     },
     "wait-element": {
       "usage": "wait-element <selector options>",
-      "notes": "Assert data.exists, not just ok. Use the selector's TimeoutMs."
+      "notes": "Assert data.exists, not just ok. Use the selector's TimeoutMs. Window queries include the working window itself and other process windows; a launched window does not prove the application's next control is ready."
     },
     "wait-file": {
       "usage": "wait-file -Path 'output.ext' [-TimeoutMs 10000] [-MinBytes 1] [-StableMs 500] [-WaitForNotExists]",
@@ -108,6 +108,6 @@
     "InteractionPolicy": "VisibleControls (default) or AllowShortcuts",
     "FallbackReason": "Required explanation for every authorized shortcut",
     "FallbackEvidence": "Required observation/screenshot reference for every authorized shortcut",
-    "LeaseTimeoutMs": "Desktop lock acquisition bound, 0..60000; default 5000"
+    "LeaseTimeoutMs": "Desktop lock acquisition bound, 0..60000; default 15000"
   }
 }

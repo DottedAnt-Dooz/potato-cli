@@ -52,8 +52,12 @@ $form.Show(); $form.Hide()
         foreach ($window in $own) { 'Owned UIA name: '+$window.Current.Name; & $module {param($element,$title,$processId) Test-PotatoElementMatch $element @{Name=$title;ProcessId=$processId}} $window $title $child.Id }
         throw
     }
+    $owner=Invoke-Fixture wait-element @('-ProcessId',"$($child.Id)",'-ControlType','Window','-Name',$title,'-TimeoutMs','1000')
+    if (-not $owner.data.exists) { throw 'Window lookup missed the working window itself.' }
     $selected=Invoke-Fixture select @('-Name','Fixture input','-ControlType','Edit')
     if ($selected.data.count -ne 1) { throw 'Editable fixture discovery failed.' }
+    $unsupported=Invoke-PotatoCliCommand -Command click -Arguments @('-Name','Fixture input','-ControlType','Edit','-Method','Invoke') -CliRoot $root -AsObject
+    if ($unsupported.ok -or $unsupported.error.message -notmatch 'InvokePattern is unavailable.*-Method Auto') { throw 'Unsupported InvokePattern did not produce an actionable error.' }
     $literal='Literal +^%~(){}[] text'
     try { $typed=Invoke-Fixture type @('-Name','Fixture input','-ControlType','Edit','-Text',$literal,'-Verify') }
     catch { (Invoke-Fixture read @('-Name','Fixture input')).data | ConvertTo-Json -Depth 5; throw }
@@ -61,7 +65,8 @@ $form.Show(); $form.Hide()
     $literal='Replacement ^v{ENTER} '+[char]0x151+[char]0x171+[char]0x4e2d+[char]0x6587+[char]::ConvertFromUtf32(0x1f642)
     $typed=Invoke-Fixture type @('-Name','Fixture input','-ControlType','Edit','-Text',$literal,'-PreDelete','-Verify')
     if ($typed.data.verified -ne $true -or $typed.data.clearMethod -ne 'Selection') { throw 'Unicode/selection replacement failed.' }
-    Invoke-Fixture click @('-Name','Fixture save','-ControlType','Button','-Method','Invoke') | Out-Null
+    $saveClick=Invoke-Fixture click @('-Name','Fixture save','-ControlType','Button','-Method','Auto')
+    if ($saveClick.data.action -ne 'InvokePattern') { throw 'Auto did not use the supported UIA action.' }
     $wait=Invoke-Fixture wait-file @('-Path',$output,'-TimeoutMs','3000','-MinBytes','1','-StableMs','100')
     if (-not $wait.data.conditionMet -or [IO.File]::ReadAllText($output) -cne $literal) { throw 'Visible save button did not persist literal content.' }
     Invoke-Fixture click @('-Name','Fixture modal opener','-ControlType','Button','-Method','Invoke') | Out-Null

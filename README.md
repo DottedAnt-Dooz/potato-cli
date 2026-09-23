@@ -161,7 +161,7 @@ Wait for a saved file:
 - Run commands against one desktop sequentially. A screenshot run concurrently with typing cannot prove the resulting state.
 - `ok` means command execution succeeded. Check `exists`/`conditionMet` and assert the actual application result separately. `verified` is `null` unless verification was requested.
 - `type` sends literal Unicode keyboard events, including text that resembles shortcut syntax. Use `hotkey` for explicitly permitted key expressions. `type -Verify` polls read-only UIA text for up to 3000 ms by default and never retypes. `-VerifyMode NormalizedExact|NormalizedContains` handles line-ending differences. `-TimeoutMs` bounds target discovery; `-VerifyTimeoutMs` bounds readback. `-PreDelete` now defaults to TextPattern selection plus Backspace; `-ClearMethod Shortcut` explicitly opts into Ctrl+A. Unsupported selection/verification fails clearly.
-- `click -Method Mouse` uses the selected control's geometry without inventing absolute coordinates; `-Method Invoke` requires InvokePattern. Capture/observe the postcondition before retrying a potentially completed action.
+- Use the default `click -Method Auto` unless a method is required. It tries a supported UIA action, then a visible mouse click. `-Method Mouse` uses live control geometry; `-Method Invoke` requires InvokePattern and now reports available patterns if absent. Capture/observe the postcondition before retrying a potentially completed action.
 - Use `wait-file -Path <unique-execution-output> -MinBytes 1 -StableMs 500 -TimeoutMs 10000` for asynchronous files, then check required format/content. A stale file or a stable but invalid file is not a passing result.
 - `TimeoutMs` is a retry deadline, not a hard cancellation of a blocked UIA provider call. Exact selector predicates are pushed to the provider, but provider hangs still require external process supervision.
 
@@ -175,8 +175,8 @@ Wait for a saved file:
 
 ## Troubleshooting
 
-- If `start` succeeds but `windowFound` is false, increase `-WaitForWindowMs` or focus the app later with `focus`.
-- If selectors time out in Office, first run `observe -Depth 3 -MaxElements 300` and inspect `name`, `automationId`, `className`, and `controlType`.
+- If `start` succeeds but `windowFound` is false, increase `-WaitForWindowMs` or focus the app later with `focus`. A visible window does not mean its next control is ready. `wait-element -ControlType Window` includes the working window itself; check `data.exists`.
+- If selectors time out, first run a bounded `observe` and inspect `name`, `automationId`, `className`, and `controlType`.
 - If a click does nothing, try `-Center true` or inspect `supportedPatterns` from `select`/`observe`.
 - If UI Automation cannot see elevated windows, run PowerShell with the same elevation level as the target application.
 - If output is not valid JSON, the command has been wrapped by something that writes extra stdout. Run `potato.ps1` directly and keep diagnostic output in logs, not stdout.
@@ -191,7 +191,7 @@ Every command defaults to `-InteractionPolicy VisibleControls`. Ordinary `type` 
 
 `select`/`observe` preserve identity and patterns when an element has empty/invalid bounds, returning `boundingRectangle:null`, `boundsStatus`, and `propertyErrors`. Physical input and element screenshots require valid geometry; UIA reads/Invoke do not. `-ProcessId` scopes selectors and `-ModalOnly` limits matches to modal descendants. `start` only accepts executable launches; `-RequireNewProcess` rejects existing instances.
 
-Commands acquire a desktop-session mutex before loading state and release it after recording results. `-LeaseTimeoutMs` defaults to 5000. State is replaced atomically. Logging errors become structured command failures. `outcome:unknown` after a potentially dispatched failure requires observing state before retrying; UIA provider calls still need external supervision if they hang. The mutex serializes commands, not whole multi-command workflows.
+Commands acquire a desktop-session mutex before loading state and release it after recording results. `-LeaseTimeoutMs` defaults to 15000 so a bounded UIA query can finish before another command reports DesktopBusy; callers should still issue desktop actions sequentially. State is replaced atomically. Logging errors become structured command failures. `outcome:unknown` after a potentially dispatched failure requires observing state before retrying; UIA provider calls still need external supervision if they hang. The mutex serializes commands, not whole multi-command workflows.
 
 For a reusable backend, import `PoTAToCli/PoTAToCli.psm1` once and call `Invoke-PotatoCliCommand -Command ... -Arguments @(...) -AsObject`. This executes the identical dispatcher and policy checks without subprocess startup or JSON parsing. Shell callers still receive one JSON object. `durationMs`, `leaseWaitMs`, and `totalDurationMs` separate backend work and lock/dispatch overhead.
 

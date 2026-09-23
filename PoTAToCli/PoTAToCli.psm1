@@ -1030,7 +1030,10 @@ function Invoke-PotatoSelect {
     )
 
     $inputs = Get-PotatoSelectorInputs -ArgsMap $ArgsMap
-    $scopeRoot = if ($inputs.selector.ModalOnly) { Get-PotatoRootElement } else { $null }
+    # A working window cannot be found by searching only its descendants.
+    # Window queries also need to see sibling and owned dialog windows.
+    $windowQuery = (-not $inputs.path) -and (([string]$inputs.selector.ControlType -eq 'Window') -or [bool]$inputs.selector.WindowTitle)
+    $scopeRoot = if ($inputs.selector.ModalOnly -or $windowQuery) { Get-PotatoRootElement } else { $null }
     $pathResult = Resolve-PotatoSelectorPath -Path $inputs.path -StartParent $scopeRoot
     if (-not $pathResult.ok) { throw "Selector path failed at index $($pathResult.failedIndex)." }
 
@@ -1088,46 +1091,36 @@ function Invoke-PotatoElementDefaultAction {
         [object] $Element
     )
 
-    try {
-        $invoke = $Element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-        if ($invoke) {
-            $invoke.Invoke()
-            return 'InvokePattern'
-        }
+    # Fall back only when a pattern is absent. If an action throws after the
+    # provider received it, another pattern or mouse click could double-act.
+    $pattern = $null
+    if ($Element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+        $pattern.Invoke()
+        return 'InvokePattern'
     }
-    catch {}
 
-    try {
-        $toggle = $Element.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
-        if ($toggle) {
-            $toggle.Toggle()
-            return 'TogglePattern'
-        }
+    $pattern = $null
+    if ($Element.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {
+        $pattern.Toggle()
+        return 'TogglePattern'
     }
-    catch {}
 
-    try {
-        $selection = $Element.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
-        if ($selection) {
-            $selection.Select()
-            return 'SelectionItemPattern'
-        }
+    $pattern = $null
+    if ($Element.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
+        $pattern.Select()
+        return 'SelectionItemPattern'
     }
-    catch {}
 
-    try {
-        $expand = $Element.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
-        if ($expand) {
-            if ($expand.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Collapsed) {
-                $expand.Expand()
-            }
-            else {
-                $expand.Collapse()
-            }
-            return 'ExpandCollapsePattern'
+    $pattern = $null
+    if ($Element.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) {
+        if ($pattern.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Collapsed) {
+            $pattern.Expand()
         }
+        else {
+            $pattern.Collapse()
+        }
+        return 'ExpandCollapsePattern'
     }
-    catch {}
 
     return $null
 }
@@ -1209,7 +1202,11 @@ function Invoke-PotatoClick {
 
     $action = $null
     if ($method -eq 'Invoke') {
-        $target.element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        $invokePattern = $null
+        if (-not $target.element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invokePattern)) {
+            throw ('InvokePattern is unavailable on this control. Use -Method Auto to choose a supported UIA action or visible mouse click. Supported patterns: ' + ($elementInfo.supportedPatterns -join ', '))
+        }
+        $invokePattern.Invoke()
         $action = 'InvokePattern'
     }
     elseif ($method -eq 'Auto' -and $button -eq 'Left' -and $offsetX -eq 0 -and $offsetY -eq 0 -and -not $center) {
@@ -1941,7 +1938,7 @@ function Invoke-PotatoCliCommand {
     try {
         if ($Command -ne 'help') {
             $map = ConvertTo-PotatoArgumentMap $Arguments
-            $lease = Enter-PotatoDesktopLease -TimeoutMs (ConvertTo-PotatoInt (Get-PotatoArg $map @('LeaseTimeoutMs')) 5000)
+            $lease = Enter-PotatoDesktopLease -TimeoutMs (ConvertTo-PotatoInt (Get-PotatoArg $map @('LeaseTimeoutMs')) 15000)
         }
         $leaseMs = $watch.ElapsedMilliseconds
         $response = Invoke-PotatoCliCommandCore -Command $Command -Arguments $Arguments -CliRoot $CliRoot
