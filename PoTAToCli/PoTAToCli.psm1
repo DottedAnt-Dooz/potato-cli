@@ -224,7 +224,7 @@ function ConvertTo-PotatoArgumentMap {
 
         if ($arg -match '^-{1,2}(.+)$') {
             $name = $Matches[1]
-            if (($i + 1) -lt $Arguments.Count -and $Arguments[$i + 1] -notmatch '^-') {
+            if (($i + 1) -lt $Arguments.Count -and ($Arguments[$i + 1] -notmatch '^-' -or $Arguments[$i + 1] -match '^-\d+(\.\d+)?$')) {
                 $map[$name] = $Arguments[$i + 1]
                 $i += 2
             }
@@ -390,13 +390,15 @@ function Test-PotatoElementMatch {
     $regex = ConvertTo-PotatoBool $Selector.Regex $false
     $current = $Element.Current
     $controlName = Get-PotatoControlTypeName -Element $Element
-    $processName = ''
-    try { $processName = (Get-Process -Id $current.ProcessId -ErrorAction Stop).ProcessName } catch {}
 
     if (-not (Test-PotatoPattern -Actual $current.Name -Expected $Selector.Name -Regex $regex)) { return $false }
     if (-not (Test-PotatoPattern -Actual $current.AutomationId -Expected $Selector.AutomationId -Regex $regex)) { return $false }
     if (-not (Test-PotatoPattern -Actual $current.ClassName -Expected $Selector.ClassName -Regex $regex)) { return $false }
-    if (-not (Test-PotatoPattern -Actual $processName -Expected $Selector.ProcessName -Regex $regex)) { return $false }
+    if ($Selector.ProcessName) {
+        $processName = ''
+        try { $processName = (Get-Process -Id $current.ProcessId -ErrorAction Stop).ProcessName } catch {}
+        if (-not (Test-PotatoPattern -Actual $processName -Expected $Selector.ProcessName -Regex $regex)) { return $false }
+    }
     if (-not (Test-PotatoPattern -Actual $current.Name -Expected $Selector.WindowTitle -Regex $regex)) { return $false }
 
     if ($Selector.ControlType -and "$($Selector.ControlType)" -ne '') {
@@ -448,6 +450,38 @@ function Get-PotatoWorkingElement {
     return @(Find-PotatoElement -Selector $selector -Parent (Get-PotatoRootElement) -TimeoutMs 100 -FindFirst) | Select-Object -First 1
 }
 
+function New-PotatoSearchCondition {
+    param([Parameter(Mandatory)] [object] $Selector)
+
+    $conditions = @()
+    foreach ($field in @('Name', 'AutomationId', 'ClassName', 'WindowTitle', 'ControlType', 'ProcessName')) {
+        foreach ($pattern in @($Selector.$field)) {
+            if ($pattern -and (ConvertTo-PotatoBool $Selector.Regex $false)) {
+                try { [void][regex]::new([string]$pattern) }
+                catch { throw "Invalid regex for ${field}: '$pattern'. Use wildcard patterns without -Regex, or valid regular expressions." }
+            }
+        }
+    }
+    if (ConvertTo-PotatoBool $Selector.Regex $false) { return [System.Windows.Automation.Condition]::TrueCondition }
+
+    # Push exact string predicates to the UIA provider. Wildcards and localized
+    # control types still use the existing matcher, preserving their semantics.
+    foreach ($field in @('Name', 'AutomationId', 'ClassName', 'WindowTitle')) {
+        $values = @($Selector.$field)
+        if (-not $Selector.$field -or @($values | Where-Object { "$_" -match '[\*\?\[]' }).Count) { continue }
+        $propertyName = if ($field -eq 'WindowTitle') { 'NameProperty' } else { $field + 'Property' }
+        $property = [System.Windows.Automation.AutomationElement]::$propertyName
+        $alternatives = @($values | ForEach-Object {
+            New-Object System.Windows.Automation.PropertyCondition($property, [string]$_, [System.Windows.Automation.PropertyConditionFlags]::IgnoreCase)
+        })
+        if ($alternatives.Count -eq 1) { $conditions += $alternatives[0] }
+        elseif ($alternatives.Count -gt 1) { $conditions += New-Object System.Windows.Automation.OrCondition(,[System.Windows.Automation.Condition[]]$alternatives) }
+    }
+    if ($conditions.Count -eq 0) { return [System.Windows.Automation.Condition]::TrueCondition }
+    if ($conditions.Count -eq 1) { return $conditions[0] }
+    return New-Object System.Windows.Automation.AndCondition(,[System.Windows.Automation.Condition[]]$conditions)
+}
+
 function Find-PotatoElement {
     [CmdletBinding()]
     param(
@@ -477,12 +511,14 @@ function Find-PotatoElement {
     if ($recurse) {
         $scope = [System.Windows.Automation.TreeScope]::Descendants
     }
+    # Validate before the retry loop. An invalid regex must not become a silent miss.
+    $condition = New-PotatoSearchCondition -Selector $Selector
     $stopAt = (Get-Date).AddMilliseconds($effectiveTimeout)
 
     do {
         $matches = @()
         try {
-            $collection = $Parent.FindAll($scope, [System.Windows.Automation.Condition]::TrueCondition)
+            $collection = $Parent.FindAll($scope, $condition)
             foreach ($element in $collection) {
                 if (Test-PotatoElementMatch -Element $element -Selector $Selector) {
                     $matches += $element
@@ -524,9 +560,9 @@ function Resolve-PotatoSelectorPath {
     $selectors = @($Path)
     for ($i = 0; $i -lt $selectors.Count; $i++) {
         $selector = $selectors[$i]
-        if (-not $selector.Recurse) { $selector | Add-Member -NotePropertyName Recurse -NotePropertyValue $true -Force }
-        if (-not $selector.FindFirst) { $selector | Add-Member -NotePropertyName FindFirst -NotePropertyValue $true -Force }
-        if (-not $selector.TimeoutMs) { $selector | Add-Member -NotePropertyName TimeoutMs -NotePropertyValue $DefaultTimeoutMs -Force }
+        if ($null -eq $selector.Recurse) { $selector | Add-Member -NotePropertyName Recurse -NotePropertyValue $true -Force }
+        if ($null -eq $selector.FindFirst) { $selector | Add-Member -NotePropertyName FindFirst -NotePropertyValue $true -Force }
+        if ($null -eq $selector.TimeoutMs) { $selector | Add-Member -NotePropertyName TimeoutMs -NotePropertyValue $DefaultTimeoutMs -Force }
 
         $found = @(Find-PotatoElement -Selector $selector -Parent $parent -FindFirst -TimeoutMs (ConvertTo-PotatoInt $selector.TimeoutMs $DefaultTimeoutMs)) | Select-Object -First 1
         if (-not $found) {
@@ -554,7 +590,7 @@ function Get-PotatoSelectorInputs {
             $pathJson = $selectorJson
         }
         elseif ($selectorJson.path -or $selectorJson.Path) {
-            $pathJson = @($selectorJson.path + $selectorJson.Path) | Where-Object { $_ }
+            $pathJson = @($selectorJson.path)
             if ($selectorJson.target) {
                 $selector = $selectorJson.target
             }
@@ -757,7 +793,7 @@ function Invoke-PotatoStart {
     $maximize = ConvertTo-PotatoBool (Get-PotatoArg -ArgsMap $ArgsMap -Names @('Maximize', 'MaximizeWindow')) $false
 
     $filePath = ''
-    $targetProcessName = $processName
+    $targetProcessName = [System.IO.Path]::GetFileName([string]$processName) -replace '(?i)\.exe$', ''
     if (Test-Path -LiteralPath $processName) {
         $filePath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($processName)
         $targetProcessName = [System.IO.Path]::GetFileNameWithoutExtension($filePath)
@@ -1110,6 +1146,11 @@ function Invoke-PotatoClick {
     $target = Resolve-PotatoCommandTarget -ArgsMap $ArgsMap -AllowPathAsTarget
     if (-not $target.ok) { throw $target.error }
 
+    $method = [string](Get-PotatoArg -ArgsMap $ArgsMap -Names @('Method') -Default 'Auto')
+    if ($method -notin @('Auto', 'Mouse', 'Invoke')) { throw 'click -Method must be Auto, Mouse, or Invoke.' }
+    # Read evidence before acting: invoking a dialog button may destroy it.
+    $elementInfo = ConvertTo-PotatoElementInfo -Element $target.element
+    if (-not $elementInfo.isEnabled) { throw 'The target element is disabled.' }
     $focus = ConvertTo-PotatoBool (Get-PotatoArg -ArgsMap $ArgsMap -Names @('Focus')) $true
     $elementFocus = ConvertTo-PotatoBool (Get-PotatoArg -ArgsMap $ArgsMap -Names @('ElementFocus')) $true
     $center = ConvertTo-PotatoBool (Get-PotatoArg -ArgsMap $ArgsMap -Names @('Center')) $false
@@ -1127,33 +1168,42 @@ function Invoke-PotatoClick {
     }
 
     $action = $null
-    if ($button -eq 'Left' -and $offsetX -eq 0 -and $offsetY -eq 0 -and -not $center) {
+    if ($method -eq 'Invoke') {
+        $target.element.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        $action = 'InvokePattern'
+    }
+    elseif ($method -eq 'Auto' -and $button -eq 'Left' -and $offsetX -eq 0 -and $offsetY -eq 0 -and -not $center) {
         $action = Invoke-PotatoElementDefaultAction -Element $target.element
     }
-    $point = Get-PotatoClickPoint -Element $target.element -Center $center -OffsetX $offsetX -OffsetY $offsetY -OffsetClickablePoint $offsetClickablePoint
+    $point = $null
     if (-not $action) {
+        if ($elementInfo.isOffscreen -or $elementInfo.boundingRectangle.width -le 0 -or $elementInfo.boundingRectangle.height -le 0) {
+            throw 'Mouse click requires a visible, nonempty target rectangle.'
+        }
+        $point = Get-PotatoClickPoint -Element $target.element -Center $center -OffsetX $offsetX -OffsetY $offsetY -OffsetClickablePoint $offsetClickablePoint
         Move-PotatoMouse -X $point.x -Y $point.y
         Invoke-PotatoMouseClick -Button $button
         $action = 'Mouse'
     }
 
     $verifyDisappeared = ConvertTo-PotatoBool (Get-PotatoArg -ArgsMap $ArgsMap -Names @('VerifyDisappeared')) $false
-    $verified = $true
+    $verified = $null
     if ($verifyDisappeared) {
         Start-Sleep -Milliseconds 500
         $matches = @(Find-PotatoElement -Selector $target.selector -TimeoutMs 1000 -FindFirst)
         $verified = ($matches.Count -eq 0)
     }
 
-    $script:CurrentState.lastAction = [ordered]@{ command = 'click'; ok = $verified; timestamp = (Get-Date).ToString('o') }
+    $script:CurrentState.lastAction = [ordered]@{ command = 'click'; ok = ($verified -ne $false); timestamp = (Get-Date).ToString('o') }
     Save-PotatoState -State $script:CurrentState
 
     [ordered]@{
         clicked = $true
         verified = $verified
+        verificationPerformed = $verifyDisappeared
         action = $action
         point = $point
-        element = ConvertTo-PotatoElementInfo -Element $target.element
+        element = $elementInfo
     }
 }
 
@@ -1183,6 +1233,31 @@ function Invoke-PotatoClickCoordinate {
     [ordered]@{ clicked = $true; point = [ordered]@{ x = $x; y = $y }; button = $button; action = $action }
 }
 
+function ConvertTo-PotatoLiteralKeys {
+    param([AllowEmptyString()] [string] $Text)
+    $builder = New-Object System.Text.StringBuilder
+    foreach ($character in $Text.Replace("`r`n", "`n").Replace("`r", "`n").ToCharArray()) {
+        $token = [string]$character
+        if ($token -eq "`n") { $token = '{ENTER}' }
+        elseif ($token -eq "`t") { $token = '{TAB}' }
+        elseif ('+^%~(){}[]'.Contains($token)) { $token = '{' + $token + '}' }
+        [void]$builder.Append($token)
+    }
+    return $builder.ToString()
+}
+
+function Get-PotatoEditableText {
+    param([Parameter(Mandatory)] [object] $Element)
+    $pattern = $null
+    if ($Element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
+        return [string]$pattern.Current.Value
+    }
+    if ($Element.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$pattern)) {
+        return [string]$pattern.DocumentRange.GetText(-1)
+    }
+    throw 'Text verification requires ValuePattern or TextPattern on the target; its name is not text evidence.'
+}
+
 function Invoke-PotatoType {
     [CmdletBinding()]
     param(
@@ -1200,65 +1275,68 @@ function Invoke-PotatoType {
     $typeByCharacter = ConvertTo-PotatoBool (Get-PotatoArg -ArgsMap $ArgsMap -Names @('TypeByCharacter')) $false
     $useWildcard = ConvertTo-PotatoBool (Get-PotatoArg -ArgsMap $ArgsMap -Names @('UseWildcardForVerify')) $false
     $maxAttempts = ConvertTo-PotatoInt (Get-PotatoArg -ArgsMap $ArgsMap -Names @('MaxAttempts')) 5
+    if ($maxAttempts -lt 1) { throw 'MaxAttempts must be at least 1.' }
 
     if ($focus) {
         $working = Get-PotatoWorkingElement
         if ($working) { [void](Show-PotatoWindow -Handle $working.Current.NativeWindowHandle) }
     }
 
-    $shell = New-Object -ComObject WScript.Shell
+    $element = [System.Windows.Automation.AutomationElement]::FocusedElement
+    if ($ArgsMap.ContainsKey('SelectorJson') -or $ArgsMap.ContainsKey('PathJson') -or $ArgsMap.ContainsKey('AutomationId') -or $ArgsMap.ContainsKey('Name') -or $ArgsMap.ContainsKey('ControlType')) {
+        $target = Resolve-PotatoCommandTarget -ArgsMap $ArgsMap -AllowPathAsTarget
+        if (-not $target.ok) { throw $target.error }
+        $element = $target.element
+        $element.SetFocus()
+    }
+    $clearMethod = [string](Get-PotatoArg -ArgsMap $ArgsMap -Names @('ClearMethod') -Default 'Selection')
+    if ($clearMethod -notin @('Selection', 'Shortcut')) { throw 'ClearMethod must be Selection or Shortcut.' }
+    if ($verify) { [void](Get-PotatoEditableText -Element $element) }
     if ($preDelete) {
-        [System.Windows.Forms.SendKeys]::SendWait('^a')
-        Start-Sleep -Milliseconds 100
-        $shell.SendKeys('{BACKSPACE}')
-        Start-Sleep -Milliseconds 100
+        if ($clearMethod -eq 'Shortcut') {
+            [System.Windows.Forms.SendKeys]::SendWait('^a')
+        }
+        else {
+            $selection = $null
+            if (-not $element.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$selection)) {
+                throw 'PreDelete requires TextPattern selection. Use the visible selection route, or explicit -ClearMethod Shortcut only if permitted by the testcase.'
+            }
+            $selection.DocumentRange.Select()
+        }
+        [System.Windows.Forms.SendKeys]::SendWait('{BACKSPACE}')
     }
 
     $sendText = {
         param($value, $byChar)
         if ($byChar) {
-            foreach ($char in [char[]]$value) {
-                $s = [string]$char
-                if ($s -eq '+') { $s = '{+}' }
-                $shell.SendKeys($s)
+            foreach ($char in [char[]]([string]$value).Replace("`r`n", "`n").Replace("`r", "`n")) {
+                [System.Windows.Forms.SendKeys]::SendWait((ConvertTo-PotatoLiteralKeys -Text ([string]$char)))
                 Start-Sleep -Milliseconds 50
             }
         }
         else {
-            $shell.SendKeys([string]$value)
+            [System.Windows.Forms.SendKeys]::SendWait((ConvertTo-PotatoLiteralKeys -Text ([string]$value)))
         }
     }
 
     & $sendText $text $typeByCharacter
-    $typedOk = $true
+    $typedOk = $null
     if ($verify) {
         $typedOk = $false
         for ($i = 0; $i -lt $maxAttempts; $i++) {
             Start-Sleep -Milliseconds 300
-            Set-Clipboard -Value ''
-            [System.Windows.Forms.SendKeys]::SendWait('^a')
-            Start-Sleep -Milliseconds 100
-            [System.Windows.Forms.SendKeys]::SendWait('^c')
-            Start-Sleep -Milliseconds 100
-            $actual = [string](Get-Clipboard)
-            if (($useWildcard -and $actual -like "*$text*") -or (-not $useWildcard -and $actual -eq $text)) {
+            $actual = Get-PotatoEditableText -Element $element
+            if (($useWildcard -and $actual.IndexOf([string]$text, [System.StringComparison]::Ordinal) -ge 0) -or (-not $useWildcard -and $actual -ceq $text)) {
                 $typedOk = $true
                 break
-            }
-            if ($i -lt ($maxAttempts - 1)) {
-                if ($preDelete) {
-                    [System.Windows.Forms.SendKeys]::SendWait('^a')
-                    $shell.SendKeys('{BACKSPACE}')
-                }
-                & $sendText $text $typeByCharacter
             }
         }
     }
 
-    $script:CurrentState.lastAction = [ordered]@{ command = 'type'; ok = $typedOk; timestamp = (Get-Date).ToString('o') }
+    $script:CurrentState.lastAction = [ordered]@{ command = 'type'; ok = ($typedOk -ne $false); timestamp = (Get-Date).ToString('o') }
     Save-PotatoState -State $script:CurrentState
 
-    [ordered]@{ typed = $typedOk; textLength = ([string]$text).Length; verified = $typedOk }
+    [ordered]@{ typed = $true; textLength = ([string]$text).Length; verified = $typedOk; verificationPerformed = $verify; inputMethod = 'SendKeysLiteral'; clearMethod = $(if ($preDelete) { $clearMethod } else { $null }) }
 }
 
 function Invoke-PotatoHotkey {
@@ -1374,14 +1452,37 @@ function Invoke-PotatoWaitFile {
     if (-not $path) { throw 'wait-file requires -Path or a positional path.' }
     $timeoutMs = ConvertTo-PotatoInt (Get-PotatoArg -ArgsMap $ArgsMap -Names @('TimeoutMs', 'MillisecondsToWait')) 1000
     $waitForNotExists = ConvertTo-PotatoBool (Get-PotatoArg -ArgsMap $ArgsMap -Names @('WaitForNotExists')) $false
-    $stopAt = (Get-Date).AddMilliseconds($timeoutMs)
+    $minBytes = ConvertTo-PotatoInt (Get-PotatoArg -ArgsMap $ArgsMap -Names @('MinBytes')) 0
+    $stableMs = ConvertTo-PotatoInt (Get-PotatoArg -ArgsMap $ArgsMap -Names @('StableMs')) 0
+    if ($timeoutMs -lt 0 -or $minBytes -lt 0 -or $stableMs -lt 0) { throw 'TimeoutMs, MinBytes and StableMs must be nonnegative.' }
+    if ($waitForNotExists -and ($minBytes -gt 0 -or $stableMs -gt 0)) { throw 'WaitForNotExists cannot be combined with MinBytes or StableMs.' }
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $lastSignature = $null
+    $stableSince = 0L
+    $conditionMet = $false
+    $length = $null
     do {
         $exists = Test-Path -LiteralPath $path
-        if (($exists -and -not $waitForNotExists) -or (-not $exists -and $waitForNotExists)) { break }
-        Start-Sleep -Milliseconds 100
-    } while ((Get-Date) -lt $stopAt)
+        $length = $null
+        if ($waitForNotExists) { $conditionMet = -not $exists }
+        elseif ($exists) {
+            try {
+                $item = Get-Item -LiteralPath $path -ErrorAction Stop
+                if (-not $item.PSIsContainer) {
+                    $length = $item.Length
+                    $signature = '{0}:{1}' -f $length, $item.LastWriteTimeUtc.Ticks
+                    if ($signature -ne $lastSignature) { $lastSignature = $signature; $stableSince = $watch.ElapsedMilliseconds }
+                    $conditionMet = ($length -ge $minBytes -and ($watch.ElapsedMilliseconds - $stableSince) -ge $stableMs)
+                }
+            }
+            catch { $lastSignature = $null }
+        }
+        else { $lastSignature = $null }
+        if ($conditionMet -or $watch.ElapsedMilliseconds -ge $timeoutMs) { break }
+        Start-Sleep -Milliseconds ([Math]::Min(100, [Math]::Max(1, $timeoutMs - $watch.ElapsedMilliseconds)))
+    } while ($true)
 
-    [ordered]@{ path = [string]$path; exists = (Test-Path -LiteralPath $path); conditionMet = $(if ($waitForNotExists) { -not (Test-Path -LiteralPath $path) } else { Test-Path -LiteralPath $path }) }
+    [ordered]@{ path = [string]$path; exists = $exists; conditionMet = $conditionMet; length = $length; minBytes = $minBytes; stableMs = $stableMs; timedOut = (-not $conditionMet) }
 }
 
 function Get-PotatoElementText {
@@ -1504,8 +1605,10 @@ function Invoke-PotatoCloseWindow {
     $selector = New-PotatoSelectorFromArguments -ArgsMap $ArgsMap
     $selector.Recurse = $false
     $timeoutMs = ConvertTo-PotatoInt (Get-PotatoArg -ArgsMap $ArgsMap -Names @('TimeoutMs')) 0
-    $windows = @(Get-PotatoTopLevelWindows -Selector $selector -TimeoutMs $timeoutMs)
-    if ($windows.Count -eq 0) {
+    $hasSelector = $selector.Name -or $selector.AutomationId -or $selector.ClassName -or $selector.ControlType -or $selector.ProcessName -or $selector.WindowTitle
+    $windows = @()
+    if ($hasSelector) { $windows = @(Get-PotatoTopLevelWindows -Selector $selector -TimeoutMs $timeoutMs) }
+    else {
         $working = Get-PotatoWorkingElement
         if ($working) { $windows = @($working) }
     }
@@ -1648,6 +1751,22 @@ function Invoke-PotatoCliCommand {
     $ok = $true
     $errorObject = $null
 
+    if ($normalized -eq 'help') {
+        try {
+            $help = Get-Content -LiteralPath (Join-Path $CliRoot 'commands.json') -Raw | ConvertFrom-Json
+            $topic = Get-PotatoArg -ArgsMap $argsMap -Names @('Topic')
+            if (-not $topic -and $argsMap._.Count) { $topic = $argsMap._[0] }
+            if ($topic) {
+                if ($help.commands.PSObject.Properties.Name -notcontains $topic) { throw "Unknown help topic '$topic'." }
+                $result = @{ topic = $topic; help = $help.commands.$topic; rules = $help.rules; selectorOptions = $help.selectorOptions }
+            }
+            else { $result = $help }
+        }
+        catch { $ok = $false; $errorObject = @{ message = $_.Exception.Message; type = 'HelpError' } }
+        @{ ok = $ok; command = 'help'; data = $result; error = $errorObject; session = $null; logPath = $null; durationMs = $watch.ElapsedMilliseconds } | ConvertTo-Json -Depth 20 -Compress
+        return
+    }
+
     try {
         Initialize-PotatoEnvironment -CliRoot $CliRoot
         Write-PotatoLog -Command $normalized -Message "Command started."
@@ -1671,6 +1790,10 @@ function Invoke-PotatoCliCommand {
             'report' { $result = Invoke-PotatoReport -ArgsMap $argsMap }
             'state' { $result = Invoke-PotatoStateCommand -ArgsMap $argsMap }
             default { throw "Unknown command '$Command'." }
+        }
+        if ($result.verificationPerformed -and $result.verified -eq $false) {
+            $ok = $false
+            $errorObject = [ordered]@{ message = 'The requested verification failed. Input was not repeated.'; type = 'VerificationFailed'; category = 'InvalidResult' }
         }
         Write-PotatoLog -Command $normalized -Level Success -Message "Command completed."
     }

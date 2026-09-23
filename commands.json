@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "rules": [
+    "Commands affecting one desktop must run sequentially, including screenshots taken after actions.",
+    "ok reports command execution; assert data.exists, data.conditionMet or an application postcondition separately.",
+    "verified is null when verification was not requested; successful input delivery does not prove the expected result.",
+    "Selectors are case-insensitive literal/wildcard matches by default. -Regex accepts regular expressions, not wildcard syntax.",
+    "TimeoutMs bounds retries; an individual UI Automation provider call may exceed it.",
+    "Use -Flag=value for values starting with a dash. Negative numeric values also work as separate tokens.",
+    "Never weaken a testcase's interaction constraints to save time. Use hotkey only when permitted."
+  ],
+  "selectorOptions": ["Name", "AutomationId", "ClassName", "Class", "ControlType", "ProcessName", "WindowTitle", "Regex", "Recurse", "FindFirst", "TimeoutMs", "PathJson", "SelectorJson"],
+  "commands": {
+    "help": {"usage": "help [-Topic type]", "notes": "Read command guidance without a desktop session or state mutation."},
+    "state": {"usage": "state [-Clear]", "notes": "Clear resets CLI context, not application state."},
+    "start": {"usage": "start -ProcessName app.exe [-Arguments='quoted process arguments'] [-WaitForWindowMs 15000] [-Maximize] [-KillExisting]", "notes": "FilePath/Path and positional launch target are also accepted. KillExisting is destructive and must only be used for disposable test-owned apps. Check data.windowFound. A file-association launch does not exercise an application's Open UI."},
+    "focus": {"usage": "focus -ProcessName app [-WindowTitle '*title*'] [-ProcessId 1234] [-Maximize] [-TimeoutMs 5000]"},
+    "windows": {"usage": "windows [-ProcessName app] [-WindowTitle '*title*'] [-TimeoutMs 0]"},
+    "observe": {"usage": "observe [-Depth 2] [-MaxElements 120]", "notes": "Use for unknown UI states. Prefer targeted select/read for known postconditions."},
+    "select": {"usage": "select <selector options> [-MaxResults 20]", "notes": "Queries elements; it does not select a dropdown item. data.count=0 is a valid query result. Open a dropdown before looking for its items."},
+    "click": {"usage": "click <selector options> [-Method Auto|Mouse|Invoke] [-Center true] [-Button Left|Right] [-Focus false] [-ElementFocus false] [-OffsetX 0] [-OffsetY 0] [-VerifyDisappeared]", "notes": "Auto tries UIA patterns then mouse. Mouse uses the selected control's live geometry. Invoke requires InvokePattern. Methods are explicit; do not retry a possibly completed action without observing its result."},
+    "click-coordinate": {"usage": "click-coordinate -X 100 -Y 100 [-Button Left|Right]", "notes": "Fallback only; retain a screenshot and explain the missing selector route."},
+    "type": {"usage": "type -Text 'literal text' [<selector options>] [-PreDelete] [-ClearMethod Selection|Shortcut] [-Verify] [-UseWildcardForVerify] [-MaxAttempts 5] [-TypeByCharacter] [-Focus]", "notes": "Types literal text, including SendKeys metacharacters. No clipboard. PreDelete defaults to UIA TextPattern selection plus Backspace; Shortcut explicitly uses Ctrl+A and must be permitted. Verify reads ValuePattern/TextPattern and never retypes on failure. UseWildcardForVerify means literal substring containment, not a wildcard expression. MaxAttempts controls read-only verification polls."},
+    "hotkey": {"usage": "hotkey -Keys '^s' [-Focus]", "notes": "Explicit Windows Forms SendKeys expression. Forbidden when the testcase requires visible menus/buttons instead."},
+    "drag": {"usage": "drag -StartX 100 -StartY 100 -EndX 200 -EndY 200 [-Smooth]", "notes": "Absolute coordinates; record fallback rationale and evidence."},
+    "hover": {"usage": "hover <selector options> | hover -X 100 -Y 100"},
+    "wait-element": {"usage": "wait-element <selector options>", "notes": "Assert data.exists, not just ok. Use the selector's TimeoutMs."},
+    "wait-file": {"usage": "wait-file -Path 'output.ext' [-TimeoutMs 10000] [-MinBytes 1] [-StableMs 500] [-WaitForNotExists]", "notes": "Assert data.conditionMet. StableMs requires unchanged length AND last-write time. Directories are not files. Stability alone does not prove file validity or content. Use unique execution paths to avoid stale-file passes."},
+    "read": {"usage": "read <selector options>", "notes": "Returns data.text from ValuePattern, TextPattern, or element name. Choose a meaningful expected-result assertion for the target."},
+    "screenshot": {"usage": "screenshot [-OutFile 'evidence.png'] [<selector options>] [-X 0 -Y 0 -Width 800 -Height 600]", "notes": "Evidence capture alone is not an assertion that the image is correct."},
+    "close-window": {"usage": "close-window [-ProcessName app] [-WindowTitle '*title*'] [-TimeoutMs 0]", "notes": "With no selector, targets only the working window. An explicit selector miss never closes another working window. data.closed counts accepted close requests; inspect remaining windows for cleanup verification."},
+    "report": {"usage": "report -Step 1 -Status PASS -Description 'Observed result' [-Screenshot]", "notes": "Records a report event; it does not validate that the status is justified."}
+  }
+}

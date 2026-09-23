@@ -61,8 +61,11 @@ These paths are runtime output and should not be committed.
 
 ## Commands
 
+Run `potato.ps1 help` for JSON command guidance, or `potato.ps1 help -Topic type` for one command. Help needs no desktop and does not change session state. Consult it before reading implementation source.
+
 | Command | Purpose |
 | --- | --- |
+| `help` | Read command usage, selector options, and result semantics. |
 | `state` | Show current session state. Use `-Clear` to reset it. |
 | `start` | Start a process and set its first window as the working window. |
 | `focus` | Find and focus an existing top-level window. |
@@ -154,6 +157,14 @@ Wait for a saved file:
 
 ## Agent Guidance
 
+- Preserve the interaction requirements of the user/testcase. A fallback explanation does not authorize a prohibited shortcut, clipboard operation, or bypass of a required GUI route.
+- Run commands against one desktop sequentially. A screenshot run concurrently with typing cannot prove the resulting state.
+- `ok` means command execution succeeded. Check `exists`/`conditionMet` and assert the actual application result separately. `verified` is `null` unless verification was requested.
+- `type` takes literal text, escaping SendKeys metacharacters. Use `hotkey` for explicitly permitted key expressions. `type -Verify` uses read-only UIA text and never clipboard copying or automatic retyping. `-PreDelete` now defaults to TextPattern selection plus Backspace; `-ClearMethod Shortcut` explicitly opts into Ctrl+A. Unsupported selection/verification fails clearly.
+- `click -Method Mouse` uses the selected control's geometry without inventing absolute coordinates; `-Method Invoke` requires InvokePattern. Capture/observe the postcondition before retrying a potentially completed action.
+- Use `wait-file -Path <unique-execution-output> -MinBytes 1 -StableMs 500 -TimeoutMs 10000` for asynchronous files, then check required format/content. A stale file or a stable but invalid file is not a passing result.
+- `TimeoutMs` is a retry deadline, not a hard cancellation of a blocked UIA provider call. Exact selector predicates are pushed to the provider, but provider hangs still require external process supervision.
+
 - Prefer selector-based `click`, `select`, `wait-element`, and `read` over coordinates.
 - Use `observe` frequently during exploration, but keep `-Depth` and `-MaxElements` bounded to avoid excessive output.
 - Avoid `hotkey` unless the UI action is not practically accessible through visible controls. These tests are meant to exercise GUI behavior.
@@ -169,3 +180,7 @@ Wait for a saved file:
 - If a click does nothing, try `-Center true` or inspect `supportedPatterns` from `select`/`observe`.
 - If UI Automation cannot see elevated windows, run PowerShell with the same elevation level as the target application.
 - If output is not valid JSON, the command has been wrapped by something that writes extra stdout. Run `potato.ps1` directly and keep diagnostic output in logs, not stdout.
+
+## Regression checks
+
+Run `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\Regression.Tests.ps1`. The checks use temporary files and process mocks; they do not start or close user applications. Test both Windows PowerShell 5.1 and PowerShell 7 when changing argument binding or shared helpers.
